@@ -1,0 +1,113 @@
+name: Build Nizlo Remote for macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build:
+    needs: bridge
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: aarch64
+            triplet: arm64-osx
+            extra_args: --screencapturekit
+          - os: macos-15-intel
+            arch: x86_64
+            triplet: x64-osx
+            extra_args: ''
+    runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+    steps:
+      - name: Export cache access
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Restore Flutter bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install native build tools
+        run: |
+          brew install llvm create-dmg
+          if ! command -v pkg-config >/dev/null; then brew install pkg-config; fi
+          curl -fsSLO https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip -q nasm-2.16.03-macosx.zip
+          sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.24.5
+
+      - name: Apply upstream Flutter compatibility patch
+        run: |
+          cd "$(dirname "$(dirname "$(command -v flutter)")")"
+          git apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' packages/flutter/lib/src/scheduler/binding.dart
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: '1.81'
+          targets: ${{ matrix.arch }}-apple-darwin
+          components: rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: nizlo-macos-${{ matrix.arch }}
+
+      - name: Install native libraries
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+          doNotCache: false
+
+      - name: Resolve native libraries
+        run: $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Build Nizlo Remote
+        run: |
+          if [ "${{ matrix.arch }}" = aarch64 ]; then
+            sed -i -e 's/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=12.3/' build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '12.3'/" flutter/macos/Podfile
+            sed -i -e 's/osx_minimum_system_version = "[0-9]*.[0-9]*"/osx_minimum_system_version = "12.3"/' Cargo.toml
+            sed -i -e 's/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = 12.3;/' flutter/macos/Runner.xcodeproj/project.pbxproj
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.extra_args }}
+          test -f flutter/build/macos/Build/Products/Release/NizloRemote.app/Contents/MacOS/service
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' flutter/build/macos/Build/Products/Release/NizloRemote.app/Contents/Info.plist | grep -Fx com.nizlo.remote.client
+
+      - name: Package unsigned app
+        run: |
+          create-dmg --icon NizloRemote.app 200 190 --hide-extension NizloRemote.app --window-size 800 400 --app-drop-link 600 185 "nizlo-remote-1.5.0-${{ matrix.arch }}-unsigned.dmg" ./flutter/build/macos/Build/Products/Release/NizloRemote.app
+          shasum -a 256 "nizlo-remote-1.5.0-${{ matrix.arch }}-unsigned.dmg" > "nizlo-remote-1.5.0-${{ matrix.arch }}-unsigned.dmg.sha256"
+
+      - name: Upload unsigned package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nizlo-remote-macos-${{ matrix.arch }}-unsigned
+          path: |
+            nizlo-remote-1.5.0-${{ matrix.arch }}-unsigned.dmg
+            nizlo-remote-1.5.0-${{ matrix.arch }}-unsigned.dmg.sha256

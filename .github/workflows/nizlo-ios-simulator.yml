@@ -1,0 +1,200 @@
+name: Build Nizlo Remote iOS simulator app
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build:
+    needs: bridge
+    runs-on: macos-15
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+      VCPKG_TARGET_TRIPLET: arm64-ios-simulator
+    steps:
+      - name: Export cache access
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Select iOS simulator Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          xcodebuild -version
+          [[ $(xcrun --sdk iphonesimulator --show-sdk-version) == 26.* ]]
+
+      - name: Install native build tools
+        run: brew install nasm yasm autoconf autoconf-archive automake libtool pkgconf
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.24.5
+
+      - name: Apply upstream Flutter compatibility patch
+        run: |
+          cd "$(dirname "$(dirname "$(command -v flutter)")")"
+          git apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: '1.81'
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: nizlo-ios-simulator-arm64
+
+      - name: Install native libraries
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+          doNotCache: false
+
+      - name: Resolve simulator libraries
+        run: |
+          python3 - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          manifest = Path('vcpkg.json')
+          data = json.loads(manifest.read_text())
+          data['dependencies'].extend([{'name': 'libsodium', 'host': True}, 'libsodium'])
+          manifest.write_text(json.dumps(data))
+
+          # This vcpkg port treats arm64 macOS and arm64 iOS Simulator as the
+          # same Autoconf host and tries to execute an iOS binary on macOS.
+          # Manifest versioning reads a port from its registry snapshot, so
+          # use an overlay to ensure this simulator-only change takes effect.
+          overlay = Path('simulator-vcpkg-overlays/libsodium')
+          shutil.copytree(Path(os.environ['VCPKG_ROOT']) / 'ports/libsodium', overlay)
+          port = overlay / 'portfile.cmake'
+          text = port.read_text()
+          configure = '    vcpkg_make_configure(\n'
+          assert text.count(configure) == 1
+          text = text.replace(
+              configure,
+              '    if(VCPKG_TARGET_IS_IOS)\n'
+              '        set(VCPKG_MAKE_BUILD_TRIPLET "--build=x86_64-apple-darwin;--host=aarch64-apple-darwin")\n'
+              '    endif()\n'
+              + configure,
+          )
+          port.write_text(text)
+
+          # The bundled libvpx port selects arm64-darwin-gcc for all iOS
+          # triplets. Clang then tags its objects as iPhoneOS, which cannot
+          # link into a simulator app. Override only this workflow's port.
+          overlay_vpx = Path('simulator-vcpkg-overlays/libvpx')
+          shutil.copytree(Path('res/vcpkg/libvpx'), overlay_vpx)
+          vpx_port = overlay_vpx / 'portfile.cmake'
+          text = vpx_port.read_text()
+          old = '            set(LIBVPX_TARGET "arm64-darwin-gcc")\n'
+          assert text.count(old) == 1
+          text = text.replace(
+              old,
+              old + '            if(TARGET_TRIPLET STREQUAL "arm64-ios-simulator")\n'
+              '                set(OPTIONS "${OPTIONS} --extra-cflags=--target=arm64-apple-ios-simulator --extra-cxxflags=--target=arm64-apple-ios-simulator")\n'
+              '                set(ENV{LDFLAGS} "$ENV{LDFLAGS} --target=arm64-apple-ios-simulator")\n'
+              '            endif()\n',
+          )
+          vpx_port.write_text(text)
+          PY
+          $VCPKG_ROOT/vcpkg install --triplet arm64-ios-simulator --x-install-root="$VCPKG_ROOT/installed" --overlay-ports="$PWD/simulator-vcpkg-overlays"
+          # Verify the actual codec object, not just the directory triplet.
+          mkdir -p /tmp/nizlo-vpx-check
+          cd /tmp/nizlo-vpx-check
+          ar -p "$VCPKG_ROOT/installed/arm64-ios-simulator/lib/libvpx.a" vpx_decoder.c.o > vpx_decoder.o
+          xcrun vtool -show-build vpx_decoder.o | grep -q IOSSIMULATOR
+
+      - name: Restore Flutter bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Build simulator protocol library
+        run: |
+          # Cargo compiles build scripts for macOS while the app library targets
+          # iOS Simulator. pkg-config selects the matching libsodium per target.
+          export SODIUM_USE_PKG_CONFIG=1 PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_PATH_aarch64_apple_darwin="$VCPKG_ROOT/installed/arm64-osx/lib/pkgconfig"
+          export PKG_CONFIG_PATH_aarch64_apple_ios_sim="$VCPKG_ROOT/installed/arm64-ios-simulator/lib/pkgconfig"
+          # coreaudio-sys 0.2.15 passes Rust's -ios-sim triple to libclang;
+          # recent Apple Clang expects the -ios-simulator spelling instead.
+          export BINDGEN_EXTRA_CLANG_ARGS="--target=arm64-apple-ios-simulator"
+          test -f "$VCPKG_ROOT/installed/arm64-osx/lib/libsodium.a"
+          test -f "$VCPKG_ROOT/installed/arm64-ios-simulator/lib/libsodium.a"
+          test -f "$PKG_CONFIG_PATH_aarch64_apple_darwin/libsodium.pc"
+          test -f "$PKG_CONFIG_PATH_aarch64_apple_ios_sim/libsodium.pc"
+          # magnum-opus uses arm64-ios for every iOS target. Give that legacy
+          # lookup the simulator libraries; never use a device iOS library.
+          test ! -e "$VCPKG_ROOT/installed/arm64-ios"
+          ln -s arm64-ios-simulator "$VCPKG_ROOT/installed/arm64-ios"
+          # Cargo's pinned git dependencies can be interrupted by transient
+          # GitHub HTTP/2 disconnects on the hosted macOS runner.
+          git config --global http.version HTTP/1.1
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true CARGO_NET_RETRY=10
+          for attempt in 1 2 3; do
+            if cargo fetch --locked --target aarch64-apple-ios-sim; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+          done
+          # Software decoding is enough for simulator screenshots; hwcodec's
+          # FFmpeg build script currently hard-codes the device iOS triplet.
+          cargo build --locked --features flutter --release --target aarch64-apple-ios-sim --lib
+
+      - name: Point iOS project at simulator library
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          project = Path('flutter/ios/Runner.xcodeproj/project.pbxproj')
+          text = project.read_text()
+          old = 'target/aarch64-apple-ios/release/'
+          assert old in text
+          text = text.replace(old, 'target/aarch64-apple-ios-sim/release/')
+          # The simulator build uses vcpkg's libsodium instead of the bundled
+          # device build. Rust's static archive keeps those symbols unresolved
+          # until Xcode links the final app, so include the simulator archive.
+          rust_archive = '"$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release/liblibrustdesk.a",'
+          assert text.count(rust_archive) == 3
+          text = text.replace(
+              rust_archive,
+              rust_archive + '\n\t\t\t\t"$(PROJECT_DIR)/../../vcpkg/installed/arm64-ios-simulator/lib/libsodium.a",',
+          )
+          text = text.replace('CLANG_ENABLE_MODULES = YES;', 'CLANG_ENABLE_MODULES = YES;\n\t\t\t\t"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;')
+          project.write_text(text)
+          PY
+
+      - name: Build unsigned simulator app
+        run: |
+          cd flutter
+          flutter build ios --simulator --debug --no-codesign --build-name 1.0.0 --build-number 1
+          app=build/ios/iphonesimulator/Runner.app
+          test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = com.nizlo.remote.ios
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$app/Info.plist")" = nizlo-remote
+          xcrun vtool -show-build "$app/Runner" | grep -q IOSSIMULATOR
+          ditto -c -k --sequesterRsrc --keepParent "$app" ../NizloRemote-ios-simulator.zip
+
+      - name: Upload simulator app
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nizlo-remote-ios-simulator
+          path: NizloRemote-ios-simulator.zip
