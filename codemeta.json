@@ -1,0 +1,41 @@
+{
+  "@context": "https://w3id.org/codemeta/3.0",
+  "@type": "SoftwareSourceCode",
+  "name": "Nizlo Remote iOS corresponding source",
+  "description": "Corresponding AGPL source for Nizlo Remote, the iPhone companion for authorized RMM remote-support sessions initiated from Nizlo.",
+  "version": "1.0.0",
+  "codeRepository": "https://github.com/izikipizi/nizlo-remote-ios-source",
+  "url": "https://nizlo.com/remote-management",
+  "license": "https://spdx.org/licenses/AGPL-3.0-only.html",
+  "runtimePlatform": "iOS",
+  "operatingSystem": "iOS",
+  "programmingLanguage": [
+    "Rust",
+    "Dart",
+    "Swift",
+    "C++"
+  ],
+  "author": {
+    "@type": "Organization",
+    "name": "Nizlo",
+    "url": "https://nizlo.com/"
+  },
+  "maintainer": {
+    "@type": "Organization",
+    "name": "Nizlo",
+    "url": "https://nizlo.com/"
+  },
+  "isBasedOn": "https://github.com/rustdesk/rustdesk",
+  "keywords": [
+    "Nizlo",
+    "RMM",
+    "MSP",
+    "remote support",
+    "remote desktop",
+    "iOS",
+    "iPhone",
+    "RustDesk",
+    "AGPL"
+  ],
+  "dateModified": "2026-11-01"
+}
