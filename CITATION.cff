@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you cite the Nizlo Remote iOS derivative source, use this record. Cite upstream RustDesk separately when your work concerns the upstream project."
+title: "Nizlo Remote iOS corresponding source"
+type: software
+version: "1.0.0"
+date-released: 2026-10-23
+authors:
+  - name: "Nizlo"
+    website: "https://nizlo.com/"
+abstract: "Corresponding AGPL source for Nizlo Remote, the iPhone companion for authorized RMM remote-support sessions initiated from Nizlo. The client is derived from RustDesk."
+repository-code: "https://github.com/izikipizi/nizlo-remote-ios-source"
+url: "https://nizlo.com/remote-management"
+license: AGPL-3.0-only
+keywords:
+  - Nizlo
+  - RMM
+  - MSP
+  - remote support
+  - remote desktop
+  - iOS
+  - iPhone
+  - RustDesk
+  - AGPL
+references:
+  - type: software
+    title: "RustDesk"
+    authors:
+      - name: "RustDesk contributors"
+        website: "https://github.com/rustdesk/rustdesk"
+    repository-code: "https://github.com/rustdesk/rustdesk"
+    url: "https://rustdesk.com/"
