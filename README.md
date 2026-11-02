@@ -1,3 +1,11 @@
+## Nizlo Remote for iPhone — corresponding source
+
+This repository publishes the corresponding source for **Nizlo Remote** iOS App Store releases. Nizlo Remote is the technician-side iPhone companion for authorized remote-support sessions initiated from Nizlo. See the public [Nizlo Remote overview](https://nizlo.com/remote-management) and the repository's [iOS build and release notes](NIZLO_IOS_BUILD.md).
+
+Nizlo Remote is derived from the AGPL-licensed RustDesk client. The upstream RustDesk README and build documentation are preserved below for attribution and reproducibility; references to RustDesk services, communities, downloads, or commercial products describe the upstream project and are not Nizlo product claims or Nizlo-operated services. See [LICENCE](LICENCE) for the applicable GNU Affero General Public License.
+
+---
+
 <p align="center">
   <img src="res/logo-header.svg" alt="RustDesk - Your remote desktop"><br>
   <a href="#raw-steps-to-build">Build</a> •
